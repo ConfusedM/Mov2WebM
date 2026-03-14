@@ -1,24 +1,34 @@
 """
 MOV to WebM Converter - Preserves Transparency
 Converts MOV files (with alpha channel) to WebM (VP9) with transparent background.
+Zero-setup: auto-downloads FFmpeg if not bundled.
 """
 
 import subprocess
 import sys
 import os
 import threading
+import zipfile
+import shutil
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
+from urllib.request import urlretrieve
+
+FFMPEG_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+
+
+def get_app_dir():
+    """Get the directory where the exe (or script) lives."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
 
 
 def find_ffmpeg():
-    """Find ffmpeg executable."""
-    # Check if bundled ffmpeg exists next to this script
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    local_ffmpeg = os.path.join(script_dir, "ffmpeg.exe")
-    if os.path.isfile(local_ffmpeg):
-        return local_ffmpeg
-    # Check PATH
+    """Find ffmpeg executable next to the app or on PATH."""
+    local = os.path.join(get_app_dir(), "ffmpeg.exe")
+    if os.path.isfile(local):
+        return local
     try:
         subprocess.run(
             ["ffmpeg", "-version"],
@@ -31,10 +41,32 @@ def find_ffmpeg():
         return None
 
 
+def download_ffmpeg(progress_callback=None):
+    """Download and extract ffmpeg.exe to the app directory."""
+    app_dir = get_app_dir()
+    zip_path = os.path.join(app_dir, "ffmpeg_download.zip")
+
+    def reporthook(block, block_size, total):
+        if progress_callback and total > 0:
+            progress_callback(block * block_size / total)
+
+    urlretrieve(FFMPEG_URL, zip_path, reporthook)
+
+    with zipfile.ZipFile(zip_path) as zf:
+        for name in zf.namelist():
+            if name.endswith("/ffmpeg.exe"):
+                with zf.open(name) as src, open(os.path.join(app_dir, "ffmpeg.exe"), "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                break
+
+    os.remove(zip_path)
+    return os.path.join(app_dir, "ffmpeg.exe")
+
+
 class ConverterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("MOV to WebM Converter (Transparent)")
+        self.root.title("MOV to WebM Converter")
         self.root.geometry("620x520")
         self.root.resizable(False, False)
         self.root.configure(bg="#1e1e2e")
@@ -46,13 +78,7 @@ class ConverterApp:
         self._build_ui()
 
         if not self.ffmpeg:
-            messagebox.showerror(
-                "FFmpeg Not Found",
-                "FFmpeg is required.\n\n"
-                "Run setup.bat to install it automatically,\n"
-                "or download it from https://ffmpeg.org and place ffmpeg.exe\n"
-                "next to this script.",
-            )
+            self._prompt_download_ffmpeg()
 
     def _build_ui(self):
         style = ttk.Style()
@@ -63,7 +89,7 @@ class ConverterApp:
         style.configure("TProgressbar", troughcolor="#313244", background="#a6e3a1")
 
         # Header
-        ttk.Label(self.root, text="MOV → WebM  (Alpha Preserved)", style="Header.TLabel").pack(pady=(18, 4))
+        ttk.Label(self.root, text="MOV \u2192 WebM  (Alpha Preserved)", style="Header.TLabel").pack(pady=(18, 4))
         ttk.Label(self.root, text="Converts MOV files to WebM with transparent background").pack()
 
         # Buttons row
@@ -96,12 +122,54 @@ class ConverterApp:
         self.progress_bar = ttk.Progressbar(self.root, variable=self.progress_var, maximum=100)
         self.progress_bar.pack(padx=18, pady=(10, 2), fill=tk.X)
 
-        self.status_var = tk.StringVar(value="Ready — add some MOV files to get started.")
+        self.status_var = tk.StringVar(value="Ready \u2014 add some MOV files to get started.")
         ttk.Label(self.root, textvariable=self.status_var).pack(pady=(0, 4))
 
         # Convert button
         self.convert_btn = ttk.Button(self.root, text="Convert All", command=self._start_convert)
         self.convert_btn.pack(pady=(0, 16))
+
+    def _prompt_download_ffmpeg(self):
+        answer = messagebox.askyesno(
+            "FFmpeg Required",
+            "FFmpeg is needed to convert videos but wasn't found.\n\n"
+            "Download it automatically? (~90 MB, one-time only)\n\n"
+            "It will be saved right next to this app.",
+        )
+        if answer:
+            self._download_ffmpeg_threaded()
+
+    def _download_ffmpeg_threaded(self):
+        self.convert_btn.configure(state=tk.DISABLED)
+        self.status_var.set("Downloading FFmpeg... please wait.")
+
+        def run():
+            try:
+                def on_progress(fraction):
+                    self.root.after(0, self.progress_var.set, fraction * 100)
+                    self.root.after(0, self.status_var.set, f"Downloading FFmpeg... {int(fraction * 100)}%")
+
+                path = download_ffmpeg(on_progress)
+                self.ffmpeg = path
+
+                def done():
+                    self.progress_var.set(0)
+                    self.status_var.set("FFmpeg ready! Add some MOV files to get started.")
+                    self.convert_btn.configure(state=tk.NORMAL)
+                    messagebox.showinfo("Done", "FFmpeg downloaded successfully!\nYou're all set.")
+
+                self.root.after(0, done)
+            except Exception as e:
+
+                def fail():
+                    self.progress_var.set(0)
+                    self.status_var.set("FFmpeg download failed.")
+                    self.convert_btn.configure(state=tk.NORMAL)
+                    messagebox.showerror("Download Failed", f"Could not download FFmpeg:\n{e}")
+
+                self.root.after(0, fail)
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _add_files(self):
         paths = filedialog.askopenfilenames(
@@ -118,7 +186,7 @@ class ConverterApp:
         self.files.clear()
         self.file_listbox.delete(0, tk.END)
         self.progress_var.set(0)
-        self.status_var.set("Ready — add some MOV files to get started.")
+        self.status_var.set("Ready \u2014 add some MOV files to get started.")
 
     def _start_convert(self):
         if self.converting:
@@ -127,7 +195,7 @@ class ConverterApp:
             messagebox.showinfo("No files", "Add some MOV files first.")
             return
         if not self.ffmpeg:
-            messagebox.showerror("FFmpeg missing", "FFmpeg not found. Run setup.bat first.")
+            self._prompt_download_ffmpeg()
             return
         self.converting = True
         self.convert_btn.configure(state=tk.DISABLED)
@@ -140,7 +208,7 @@ class ConverterApp:
 
         for i, filepath in enumerate(self.files):
             name = os.path.basename(filepath)
-            self.root.after(0, self.status_var.set, f"Converting ({i+1}/{total}): {name}")
+            self.root.after(0, self.status_var.set, f"Converting ({i + 1}/{total}): {name}")
 
             out_path = os.path.splitext(filepath)[0] + ".webm"
 
@@ -152,7 +220,7 @@ class ConverterApp:
                 "-pix_fmt", "yuva420p",
                 "-auto-alt-ref", "0",
                 "-b:v", "2M",
-                "-an",              # drop audio (typical for transparent overlays)
+                "-an",
                 out_path,
             ]
 
@@ -172,20 +240,19 @@ class ConverterApp:
 
             self.root.after(0, self.progress_var.set, ((i + 1) / total) * 100)
 
-        # Done
         def finish():
             self.converting = False
             self.convert_btn.configure(state=tk.NORMAL)
             if failed:
-                details = "\n".join(f"  • {n}" for n, _ in failed)
+                details = "\n".join(f"  \u2022 {n}" for n, _ in failed)
                 messagebox.showwarning(
                     "Done with errors",
                     f"Converted {succeeded}/{total} files.\n\nFailed:\n{details}",
                 )
-                self.status_var.set(f"Done — {succeeded} OK, {len(failed)} failed.")
+                self.status_var.set(f"Done \u2014 {succeeded} OK, {len(failed)} failed.")
             else:
                 messagebox.showinfo("Done", f"All {total} file(s) converted successfully!")
-                self.status_var.set(f"Done — {succeeded} file(s) converted.")
+                self.status_var.set(f"Done \u2014 {succeeded} file(s) converted.")
 
         self.root.after(0, finish)
 
