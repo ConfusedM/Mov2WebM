@@ -5,6 +5,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -49,4 +52,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: Mov2WebM-Windows.zip
-          generate_release_notes: true
+          body: "Download `Mov2WebM-Windows.zip`, extract, and double-click `Mov2WebM.exe`. That's it."
