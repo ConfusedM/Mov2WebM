@@ -1,0 +1,17 @@
+# Build artifacts
+dist/
+build/
+build_temp/
+*.spec.bak
+
+# FFmpeg binary (too large for git, downloaded at build time)
+ffmpeg/ffmpeg.exe
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller
+*.manifest
+*.spec.bak
